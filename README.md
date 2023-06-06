@@ -51,3 +51,6 @@ The project depends on the following NuGet packages:
 - Newtonsoft.Json
 - MailKit
 
+## Stock Price API
+
+This application uses [brapi - API de finanças](https://brapi.dev/docs) to get stock prices.
