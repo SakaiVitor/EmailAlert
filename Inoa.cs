@@ -4,8 +4,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using System.Globalization;
-using System.Net.Mail;
 using Microsoft.Extensions.Configuration;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
+using System.IO;
 
 class Tunel
 {
@@ -13,15 +16,13 @@ class Tunel
     public float LimiteSuperior { get; set; }
     public float LimiteInferior { get; set; }
     public float? ValorAcao { get; set; }
-    private bool valorAcaoUltrapassouLimiteSuperior;
-    private bool valorAcaoUltrapassouLimiteInferior;
 
     public Tunel(string ticker, float limiteSuperior, float limiteInferior)
     {
         Ticker = ticker;
         LimiteSuperior = limiteSuperior;
         LimiteInferior = limiteInferior;
-        ValorAcao = null; // Valor inicial nulo
+        ValorAcao = null;
     }
 
     private ConsoleColor ObterCorValorAcao()
@@ -29,16 +30,22 @@ class Tunel
         if (ValorAcao.HasValue)
         {
             if (ValorAcao.Value > LimiteSuperior)
-            {
-                return ConsoleColor.Green; // Valor acima do limite superior (verde)
+            {   
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Valor da Ação ultrapassou o limite superior. Email enviado!");
+                Console.ResetColor(); 
+                return ConsoleColor.Green; 
             }
             else if (ValorAcao.Value < LimiteInferior)
-            {
-                return ConsoleColor.Red; // Valor abaixo do limite inferior (vermelho)
+            {   
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Valor da Ação ultrapassou o limite inferior. Email enviado!");
+                Console.ResetColor(); 
+                return ConsoleColor.Red; 
             }
         }
 
-        return ConsoleColor.White; // Valor dentro dos limites (branco)
+        return ConsoleColor.White; 
     }
 
     public void MostrarDetalhes(DateTime ultimaAtualizacao)
@@ -69,30 +76,47 @@ class SentinelaEmail
     public SentinelaEmail(IConfiguration configuration)
     {
         var config = new ConfigurationBuilder()
-        .SetBasePath(Directory.GetCurrentDirectory())
-        .AddJsonFile("appsettings.json")
-        .Build();
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json")
+            .Build();
 
-        emailDestino = config["EmailDestino"];
-        host = config["SmtpHost"];
-        porta = int.Parse(config["SmtpPorta"]);
-        usuario = config["SmtpUsuario"];
-        senha = config["SmtpSenha"];
-    }
-
-    public async Task EnviarAlerta(float? valorAcao, string limiteUltrapassado)
-    {
-        string mensagemTexto = $"O valor da ação ultrapassou o limite {limiteUltrapassado}. Valor atual: {valorAcao:F2}";
-
-        MailMessage mensagem = new MailMessage(usuario, emailDestino, "Alerta de valor da ação", mensagemTexto);
-
-        using (SmtpClient smtpClient = new SmtpClient(host, porta))
+        if (config["SmtpHost"] != null && config["SmtpPorta"] != null && config["SmtpUsuario"] != null && config["SmtpSenha"] != null && config["EmailDestino"] != null)
         {
-            smtpClient.Credentials = new System.Net.NetworkCredential(usuario, senha);
-            smtpClient.EnableSsl = true;
-
-            await smtpClient.SendMailAsync(mensagem);
+            emailDestino = config["EmailDestino"] ?? "default@example.com";
+            host = config["SmtpHost"] ?? "smtp.default.com";
+            int.TryParse(config["SmtpPorta"], out int parsedPorta);
+            porta = parsedPorta != 0 ? parsedPorta : 587;
+            usuario = config["SmtpUsuario"] ?? "defaultUser";
+            senha = config["SmtpSenha"] ?? "defaultPassword";
         }
+        else
+        {
+            Console.WriteLine("appsettings.json possui valores inválidos");
+            Environment.Exit(0); // Stop the execution
+        }
+        }
+
+
+        public async Task EnviarAlerta(float? valorAcao, string limiteUltrapassado)
+        {
+            string mensagemTexto = $"O valor da ação ultrapassou o limite {limiteUltrapassado}. Valor atual: {valorAcao:F2}";
+
+            MimeMessage mensagem = new MimeMessage();
+            mensagem.From.Add(new MailboxAddress("", usuario));
+            mensagem.To.Add(new MailboxAddress("", emailDestino));
+            mensagem.Subject = "Alerta de valor da ação";
+            mensagem.Body = new TextPart("plain")
+            {
+                Text = mensagemTexto
+            };
+
+            using (var client = new SmtpClient())
+            {
+                await client.ConnectAsync(host, porta, SecureSocketOptions.Auto);
+                await client.AuthenticateAsync(usuario, senha);
+                await client.SendAsync(mensagem);
+                await client.DisconnectAsync(true);
+            }
     }
 }
 
@@ -101,7 +125,7 @@ class Program
     static Tunel? tunel;
     static HttpClient? httpClient;
     static DateTime ultimaAtualizacao = DateTime.MinValue;
-    static SentinelaEmail sentinelaEmail;
+    static SentinelaEmail sentinelaEmail = null!;
     static bool valorAcaoUltrapassouLimiteSuperior = false;
     static bool valorAcaoUltrapassouLimiteInferior = false;
     
@@ -114,7 +138,7 @@ class Program
         if (args.Length != 3)
         {
             Console.WriteLine("Uso: programa.exe ticker limiteSuperior limiteInferior");
-            return;
+            return; 
         }
 
         string ticker = args[0];
@@ -123,13 +147,23 @@ class Program
 
         tunel = new Tunel(ticker, limiteSuperior, limiteInferior);
 
-        // Exibe os detalhes iniciais do túnel
-        ultimaAtualizacao = DateTime.MinValue;
-        tunel.MostrarDetalhes(ultimaAtualizacao);
-
         // Configuração do HttpClient
         httpClient = new HttpClient();
         httpClient.BaseAddress = new Uri("https://brapi.dev/api/");
+
+        // Verifica se o ticker existe
+        string checkTickerUrl = $"quote/{tunel.Ticker}?range=1d&interval=1d&fundamental=false&dividends=false";
+        HttpResponseMessage checkTickerResponse = await httpClient.GetAsync(checkTickerUrl);
+
+        if (!checkTickerResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine("Ticker não encontrado ou inválido");
+            Environment.Exit(0);
+        }
+
+        // Exibe os detalhes iniciais do túnel
+        ultimaAtualizacao = DateTime.MinValue;
+        tunel.MostrarDetalhes(ultimaAtualizacao);
 
         // Inicializa a SentinelaEmail
         sentinelaEmail = new SentinelaEmail(configuration);
@@ -172,23 +206,14 @@ class Program
             dynamic data = JsonConvert.DeserializeObject(responseBody);
             float precoAtual = data.results[0].regularMarketPrice;
 
-            bool valorAcaoAcimaLimiteSuperior = tunel.ValorAcao > tunel.LimiteSuperior;
-            bool valorAcaoAbaixoLimiteInferior = tunel.ValorAcao < tunel.LimiteInferior;
-
-            if (valorAcaoAcimaLimiteSuperior)
-            {
-                valorAcaoUltrapassouLimiteSuperior = true;
-            }
-            else if (valorAcaoAbaixoLimiteInferior)
-            {
-                valorAcaoUltrapassouLimiteInferior = true;
-            }
-
             // Atualiza o valor da ação no objeto Tunel
             tunel.ValorAcao = precoAtual;
 
             // Atualiza a data e hora da última atualização
             ultimaAtualizacao = DateTime.Now;
+
+            bool valorAcaoAcimaLimiteSuperior = precoAtual > tunel.LimiteSuperior;
+            bool valorAcaoAbaixoLimiteInferior = precoAtual < tunel.LimiteInferior;
 
             // Verifica se o valor da ação ultrapassou os limites
             if (valorAcaoAcimaLimiteSuperior && !valorAcaoUltrapassouLimiteSuperior)
@@ -197,7 +222,7 @@ class Program
                 valorAcaoUltrapassouLimiteSuperior = true;
             }
             else if (valorAcaoAbaixoLimiteInferior && !valorAcaoUltrapassouLimiteInferior)
-            {
+            {   
                 await sentinelaEmail.EnviarAlerta(tunel.ValorAcao, $"inferior ({tunel.LimiteInferior})");
                 valorAcaoUltrapassouLimiteInferior = true;
             }
