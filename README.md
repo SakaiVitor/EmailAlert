@@ -24,8 +24,7 @@ This application monitors the price of a stock and sends email alerts when the p
 
 2. Run the following command to start the application:
 
-dotnet run <ticker> <limitUpper> <limitLower>
-
+`dotnet run <ticker> <limitUpper> <limitLower>`
 
 Replace `<ticker>` with the stock ticker symbol you want to monitor.
 Replace `<limitUpper>` with the upper limit price for the stock.
