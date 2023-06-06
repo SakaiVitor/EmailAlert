@@ -137,7 +137,7 @@ class Program
 
         if (args.Length != 3)
         {
-            Console.WriteLine("Uso: programa.exe ticker limiteSuperior limiteInferior");
+            Console.WriteLine("Uso: dotnet run <ticker> <limiteSuperior> <limiteInferior>");
             return; 
         }
 
